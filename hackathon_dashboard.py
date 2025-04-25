@@ -4,6 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
+import os
+import json
+from datetime import datetime
 
 # Configuration de la page
 st.set_page_config(
@@ -54,12 +57,161 @@ st.markdown("""
 # Titre de l'application
 st.markdown("<div class='title'>Tableau de Bord d'Évaluation HACKVERSE 2025</div>", unsafe_allow_html=True)
 
+# ------ FONCTIONS DE SAUVEGARDE ET CHARGEMENT CSV ------
+
+# Fonction pour convertir les évaluations en DataFrame plat pour export CSV
+def evaluations_to_dataframe(evaluations):
+    data = []
+    
+    for team_name, team_data in evaluations.items():
+        row = {
+            "team_name": team_name,
+            # Données collectives
+            "collective_uiDesign": team_data["collective"]["uiDesign"],
+            "collective_apiImplementation": team_data["collective"]["apiImplementation"],
+            "collective_database": team_data["collective"]["database"],
+            "collective_authentication": team_data["collective"]["authentication"],
+            "collective_crudOperations": team_data["collective"]["crudOperations"],
+            "collective_requiredFeatures": team_data["collective"]["requiredFeatures"],
+            "collective_bonusFeatures": team_data["collective"]["bonusFeatures"],
+            "collective_documentation": team_data["collective"]["documentation"],
+            "collective_teamCollaboration": team_data["collective"]["teamCollaboration"],
+            "collective_deployment": team_data["collective"]["deployment"],
+            "collective_totalScore": team_data["collective"]["totalScore"],
+            "finalScore": team_data["finalScore"]
+        }
+        
+        # Ajouter les données individuelles pour chaque membre
+        for member_name, member_data in team_data["individual"].items():
+            # S'assurer que member_name est bien une chaîne de caractères
+            member_name_str = str(member_name)
+            member_safe_name = member_name_str.replace(" ", "_").replace(".", "").replace(",", "")
+            
+            try:
+                row[f"individual_{member_safe_name}_webProgramming"] = member_data["webProgramming"]
+                row[f"individual_{member_safe_name}_algorithmic"] = member_data["algorithmic"]
+                row[f"individual_{member_safe_name}_totalScore"] = member_data["totalScore"]
+            except KeyError:
+                # Si certaines clés sont manquantes, utiliser des valeurs par défaut
+                if "webProgramming" not in member_data:
+                    row[f"individual_{member_safe_name}_webProgramming"] = 0.0
+                if "algorithmic" not in member_data:
+                    row[f"individual_{member_safe_name}_algorithmic"] = 0.0
+                if "totalScore" not in member_data:
+                    row[f"individual_{member_safe_name}_totalScore"] = 0.0
+        
+        data.append(row)
+    
+    return pd.DataFrame(data)
+
+# Fonction pour sauvegarder les évaluations dans un CSV
+def save_evaluations_to_csv(evaluations, filename="hackathon_evaluations.csv"):
+    df = evaluations_to_dataframe(evaluations)
+    df.to_csv(filename, index=False)
+    
+    # Créer également une sauvegarde avec timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"hackathon_evaluations_{timestamp}.csv"
+    # df.to_csv(backup_filename, index=False)
+    
+    return filename, backup_filename
+
+# Fonction pour reconstruire la structure des évaluations à partir du DataFrame
+def dataframe_to_evaluations(df):
+    evaluations = {}
+    
+    for _, row in df.iterrows():
+        team_name = row["team_name"]
+        
+        # Initialiser la structure pour cette équipe
+        evaluations[team_name] = {
+            "collective": {
+                "uiDesign": float(row["collective_uiDesign"]),
+                "apiImplementation": float(row["collective_apiImplementation"]),
+                "database": float(row["collective_database"]),
+                "authentication": float(row["collective_authentication"]),
+                "crudOperations": float(row["collective_crudOperations"]),
+                "requiredFeatures": float(row["collective_requiredFeatures"]),
+                "bonusFeatures": float(row["collective_bonusFeatures"]),
+                "documentation": float(row["collective_documentation"]),
+                "teamCollaboration": float(row["collective_teamCollaboration"]),
+                "deployment": float(row["collective_deployment"]),
+                "totalScore": float(row["collective_totalScore"])
+            },
+            "individual": {},
+            "finalScore": float(row["finalScore"])
+        }
+        
+        # Extraire les données individuelles
+        individual_columns = [col for col in row.index if col.startswith("individual_")]
+        
+        # Grouper par membre
+        member_prefixes = set()
+        for col in individual_columns:
+            parts = col.split('_')
+            if len(parts) >= 3:
+                # Prendre tout sauf "individual" et le critère (dernier élément)
+                member_prefix = '_'.join(parts[1:-1])
+                member_prefixes.add(member_prefix)
+        
+        # Traiter chaque membre séparément
+        for member_prefix in member_prefixes:
+            # Convertir le préfixe en nom en remplaçant les underscores par des espaces
+            member_name = member_prefix.replace('_', ' ')
+            
+            # Créer un dictionnaire pour ce membre
+            member_data = {}
+            
+            # Remplir les données pour ce membre
+            for criterion in ['webProgramming', 'algorithmic', 'totalScore']:
+                col_name = f'individual_{member_prefix}_{criterion}'
+                if col_name in row:
+                    try:
+                        member_data[criterion] = float(row[col_name])
+                    except (ValueError, TypeError):
+                        # En cas d'erreur, utiliser 0
+                        member_data[criterion] = 0.0
+                else:
+                    member_data[criterion] = 0.0
+            
+            # Ajouter le membre à la structure d'évaluation
+            evaluations[team_name]["individual"][member_name] = member_data
+    
+    return evaluations
+
+# Fonction pour charger les évaluations depuis un CSV
+def load_evaluations_from_csv(filename="hackathon_evaluations.csv", silent=False):
+    try:
+        df = pd.read_csv(filename)
+        return dataframe_to_evaluations(df)
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        if not silent:
+            st.warning(f"Le fichier {filename} n'a pas été trouvé ou est vide.")
+        return None
+
+# Fonction pour convertir récursivement toutes les valeurs numériques en flottants et remplacer les NaN par 0
+def convert_values_to_float(data):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, (int, float)):
+                # Convertir en float et remplacer NaN par 0
+                data[key] = 0.0 if pd.isna(float(value)) else float(value)
+            elif isinstance(value, dict):
+                convert_values_to_float(value)
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, (int, float)):
+                        # Convertir en float et remplacer NaN par 0
+                        value[i] = 0.0 if pd.isna(float(item)) else float(item)
+                    elif isinstance(item, (dict, list)):
+                        convert_values_to_float(item)
+    return data
+
 # Fonction pour charger les données CSV
 @st.cache_data
 def load_data():
     try:
         # Chargement depuis le dossier de l'application si disponible
-        # file_path = "D:\\indabax\\blood_donation_dashboard\\data.csv"
         file_path = "data.csv"
         df = pd.read_csv(file_path)
         return df
@@ -155,74 +307,109 @@ def transform_data(df):
 
 teams_data = transform_data(data)
 
+# Ajout d'un bouton de rechargement dans la barre latérale
+if st.sidebar.button("🔄 Recharger les données sauvegardées"):
+    loaded_evaluations = load_evaluations_from_csv(silent=False)
+    if loaded_evaluations:
+        st.session_state.evaluations = loaded_evaluations
+        st.success("Évaluations rechargées avec succès!")
+        st.rerun()
+    else:
+        st.error("Aucune sauvegarde trouvée à charger.")
+
 # Initialisation de l'état des évaluations si c'est la première visite
 if 'evaluations' not in st.session_state:
-    evaluations = {}
-    for team in teams_data:
-        # Assurer que les noms des membres sont valides et présents
-        leader_name = team["leader"]["name"] if team["leader"]["name"] else "Chef d'équipe"
-        member1_name = team["member1"]["name"] if team["member1"]["name"] else "Membre 1"
-        member2_name = team["member2"]["name"] if team["member2"]["name"] else "Membre 2"
-        
-        evaluations[team["teamName"]] = {
-            "collective": {
-                "uiDesign": 0,
-                "apiImplementation": 0,
-                "database": 0,
-                "authentication": 0,
-                "crudOperations": 0,
-                "requiredFeatures": 0,
-                "bonusFeatures": 0,
-                "documentation": 0,
-                "teamCollaboration": 0,
-                "deployment": 0,
-                "totalScore": 0
-            },
-            "individual": {
-                leader_name: {
-                    "webProgramming": 0,
-                    "algorithmic": 0,
-                    "totalScore": 0
+    # Essayer d'abord de charger depuis le CSV
+    loaded_evaluations = load_evaluations_from_csv(silent=True)
+    
+    if loaded_evaluations:
+        evaluations = loaded_evaluations
+        st.sidebar.success("✅ Évaluations chargées depuis la sauvegarde")
+    else:
+        # Si pas de CSV, initialiser avec des valeurs par défaut
+        evaluations = {}
+        for team in teams_data:
+            # Assurer que les noms des membres sont valides et présents
+            leader_name = team["leader"]["name"] if team["leader"]["name"] else "Chef d'équipe"
+            member1_name = team["member1"]["name"] if team["member1"]["name"] else "Membre 1"
+            member2_name = team["member2"]["name"] if team["member2"]["name"] else "Membre 2"
+            
+            evaluations[team["teamName"]] = {
+                "collective": {
+                    "uiDesign": 0.0,
+                    "apiImplementation": 0.0,
+                    "database": 0.0,
+                    "authentication": 0.0,
+                    "crudOperations": 0.0,
+                    "requiredFeatures": 0.0,
+                    "bonusFeatures": 0.0,
+                    "documentation": 0.0,
+                    "teamCollaboration": 0.0,
+                    "deployment": 0.0,
+                    "totalScore": 0.0
                 },
-                member1_name: {
-                    "webProgramming": 0,
-                    "algorithmic": 0,
-                    "totalScore": 0
+                "individual": {
+                    leader_name: {
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
+                    },
+                    member1_name: {
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
+                    },
+                    member2_name: {
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
+                    }
                 },
-                member2_name: {
-                    "webProgramming": 0,
-                    "algorithmic": 0,
-                    "totalScore": 0
-                }
-            },
-            "finalScore": 0
-        }
+                "finalScore": 0.0
+            }
     st.session_state.evaluations = evaluations
 else:
     evaluations = st.session_state.evaluations
+
+# Convertir toutes les valeurs numériques en flottants pour éviter les erreurs de type
+evaluations = convert_values_to_float(evaluations)
 
 # Fonction pour calculer les scores finaux
 def calculate_final_score(evaluations, team_name):
     team_eval = evaluations[team_name]
     
     # Calculer le score collectif (moyenne des critères)
-    collective_values = [value for key, value in team_eval["collective"].items() if key != "totalScore"]
+    collective_values = [float(value) for key, value in team_eval["collective"].items() if key != "totalScore"]
     if len(collective_values) > 0:
         team_eval["collective"]["totalScore"] = round(sum(collective_values) / len(collective_values), 2)
+    else:
+        team_eval["collective"]["totalScore"] = 0.0
     
     # Calculer les scores individuels
     for member, scores in team_eval["individual"].items():
-        individual_values = [value for key, value in scores.items() if key != "totalScore"]
+        individual_values = [float(value) for key, value in scores.items() if key != "totalScore"]
         if len(individual_values) > 0:
             scores["totalScore"] = round(sum(individual_values) / len(individual_values), 2)
+        else:
+            scores["totalScore"] = 0.0
     
     # Calculer le score final de l'équipe selon la formule:
     # Note équipe = (Note sur l'exercice collectif / 2) + (Somme des notes individuelles / 3) / 2
-    collective_score = team_eval["collective"]["totalScore"]
-    individual_scores = [member_scores["totalScore"] for member_scores in team_eval["individual"].values()]
-    individual_avg = sum(individual_scores) / len(individual_scores) if individual_scores else 0
+    collective_score = float(team_eval["collective"]["totalScore"])
+    individual_scores = [float(member_scores["totalScore"]) for member_scores in team_eval["individual"].values()]
     
+    # Vérifier si la liste des scores individuels n'est pas vide
+    if individual_scores:
+        individual_avg = sum(individual_scores) / len(individual_scores)
+    else:
+        individual_avg = 0.0
+    
+    # Calculer le score final
     team_eval["finalScore"] = round((collective_score / 2) + (individual_avg / 2), 2)
+    
+    # Vérifier si le score final est NaN et le remplacer par 0
+    if pd.isna(team_eval["finalScore"]):
+        team_eval["finalScore"] = 0.0
     
     return team_eval
 
@@ -256,7 +443,11 @@ with tab1:
             
             with col:
                 # Card-like container with shadow
-                st.markdown(f"<div style='border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'><h3>{team['teamName']} - {calculate_final_score(evaluations, team['teamName'])['finalScore']}/20</h3>", unsafe_allow_html=True)
+                final_score = calculate_final_score(evaluations, team['teamName'])['finalScore']
+                # Vérifier et remplacer NaN par 0
+                if pd.isna(final_score):
+                    final_score = 0.0
+                st.markdown(f"<div style='border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'><h3>{team['teamName']} - {final_score}/20</h3>", unsafe_allow_html=True)
                 
                 st.markdown(f"**Description:** {team['teamDescription']}")
                 
@@ -279,40 +470,40 @@ with tab1:
                     ui_key = f"ui_{team['teamName']}_{i}"  # Ajouter l'indice i pour garantir l'unicité
                     evaluations[team["teamName"]]["collective"]["uiDesign"] = st.number_input(
                         "Interface utilisateur (UI)",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["uiDesign"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["uiDesign"]),
                         key=ui_key
                     )
                     
                     api_key = f"api_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["apiImplementation"] = st.number_input(
                         "API RESTful",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["apiImplementation"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["apiImplementation"]),
                         key=api_key
                     )
                     
                     db_key = f"db_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["database"] = st.number_input(
                         "Base de données",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["database"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["database"]),
                         key=db_key
                     )
                     
                     auth_key = f"auth_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["authentication"] = st.number_input(
                         "Authentification",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["authentication"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["authentication"]),
                         key=auth_key
                     )
                     
                     crud_key = f"crud_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["crudOperations"] = st.number_input(
                         "Opérations CRUD",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["crudOperations"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["crudOperations"]),
                         key=crud_key
                     )
                 
@@ -320,47 +511,50 @@ with tab1:
                     req_key = f"req_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["requiredFeatures"] = st.number_input(
                         "Fonctionnalités requises",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["requiredFeatures"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["requiredFeatures"]),
                         key=req_key
                     )
                     
                     bonus_key = f"bonus_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["bonusFeatures"] = st.number_input(
                         "Fonctionnalités bonus",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["bonusFeatures"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["bonusFeatures"]),
                         key=bonus_key
                     )
                     
                     doc_key = f"doc_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["documentation"] = st.number_input(
                         "Documentation",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["documentation"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["documentation"]),
                         key=doc_key
                     )
                     
                     collab_key = f"collab_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["teamCollaboration"] = st.number_input(
                         "Collaboration d'équipe",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["teamCollaboration"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["teamCollaboration"]),
                         key=collab_key
                     )
                     
                     deploy_key = f"deploy_{team['teamName']}_{i}"
                     evaluations[team["teamName"]]["collective"]["deployment"] = st.number_input(
                         "Déploiement",
-                        min_value=0, max_value=20, step=1,
-                        value=evaluations[team["teamName"]]["collective"]["deployment"],
+                        min_value=0.0, max_value=20.0, step=1.0,
+                        value=float(evaluations[team["teamName"]]["collective"]["deployment"]),
                         key=deploy_key
                     )
                 
                 # Mettre à jour le score collectif
                 evaluate = calculate_final_score(evaluations, team["teamName"])
-                
-                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px;'><span style='font-weight: bold;'>Score collectif:</span><span class='score-badge'>{evaluate['collective']['totalScore']}/20</span></div>", unsafe_allow_html=True)
+                collective_score = evaluate['collective']['totalScore']
+                if pd.isna(collective_score):
+                    collective_score = 0.0
+                    
+                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px;'><span style='font-weight: bold;'>Score collectif:</span><span class='score-badge'>{collective_score}/20</span></div>", unsafe_allow_html=True)
                 
                 # Évaluation individuelle
                 st.markdown("<div class='subtitle'>Évaluation Individuelle</div>", unsafe_allow_html=True)
@@ -372,30 +566,33 @@ with tab1:
                 # Vérifier si la clé existe dans les évaluations
                 if leader_name not in evaluations[team["teamName"]]["individual"]:
                     evaluations[team["teamName"]]["individual"][leader_name] = {
-                        "webProgramming": 0,
-                        "algorithmic": 0,
-                        "totalScore": 0
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
                     }
                 
                 web_leader_key = f"web_{team['teamName']}_{leader_name}_{i}"
                 evaluations[team["teamName"]]["individual"][leader_name]["webProgramming"] = st.number_input(
                     "Exercice de programmation web (PDF)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][leader_name]["webProgramming"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][leader_name]["webProgramming"]),
                     key=web_leader_key
                 )
                 
                 algo_leader_key = f"algo_{team['teamName']}_{leader_name}_{i}"
                 evaluations[team["teamName"]]["individual"][leader_name]["algorithmic"] = st.number_input(
                     "Exercice d'algorithmique (Kattis)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][leader_name]["algorithmic"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][leader_name]["algorithmic"]),
                     key=algo_leader_key
                 )
                 
                 # Calculer le score individuel
                 calculate_final_score(evaluations, team["teamName"])
-                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px; margin-bottom: 15px;'><span style='font-weight: bold;'>Score individuel:</span><span class='score-badge' style='background-color: #2A3942;'>{evaluations[team['teamName']]['individual'][leader_name]['totalScore']}/20</span></div>", unsafe_allow_html=True)
+                leader_score = evaluations[team['teamName']]['individual'][leader_name]['totalScore']
+                if pd.isna(leader_score):
+                    leader_score = 0.0
+                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px; margin-bottom: 15px;'><span style='font-weight: bold;'>Score individuel:</span><span class='score-badge' style='background-color: #2A3942;'>{leader_score}/20</span></div>", unsafe_allow_html=True)
                 
                 # Membre 1 - affichage sans expander
                 member1_name = team["member1"]["name"] if team["member1"]["name"] else "Membre 1"
@@ -404,30 +601,33 @@ with tab1:
                 # Vérifier si la clé existe dans les évaluations
                 if member1_name not in evaluations[team["teamName"]]["individual"]:
                     evaluations[team["teamName"]]["individual"][member1_name] = {
-                        "webProgramming": 0,
-                        "algorithmic": 0,
-                        "totalScore": 0
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
                     }
                 
                 web_member1_key = f"web_{team['teamName']}_{member1_name}_{i}"
                 evaluations[team["teamName"]]["individual"][member1_name]["webProgramming"] = st.number_input(
                     "Exercice de programmation web (PDF)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][member1_name]["webProgramming"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][member1_name]["webProgramming"]),
                     key=web_member1_key
                 )
                 
                 algo_member1_key = f"algo_{team['teamName']}_{member1_name}_{i}"
                 evaluations[team["teamName"]]["individual"][member1_name]["algorithmic"] = st.number_input(
                     "Exercice d'algorithmique (Kattis)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][member1_name]["algorithmic"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][member1_name]["algorithmic"]),
                     key=algo_member1_key
                 )
                 
                 # Calculer le score individuel
                 calculate_final_score(evaluations, team["teamName"])
-                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px; margin-bottom: 15px;'><span style='font-weight: bold;'>Score individuel:</span><span class='score-badge' style='background-color: #2A3942;'>{evaluations[team['teamName']]['individual'][member1_name]['totalScore']}/20</span></div>", unsafe_allow_html=True)
+                member1_score = evaluations[team['teamName']]['individual'][member1_name]['totalScore']
+                if pd.isna(member1_score):
+                    member1_score = 0.0
+                st.markdown(f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #2A3942; padding: 10px; border-radius: 5px; margin-top: 10px; margin-bottom: 15px;'><span style='font-weight: bold;'>Score individuel:</span><span class='score-badge' style='background-color: #2A3942;'>{member1_score}/20</span></div>", unsafe_allow_html=True)
                 
                 # Membre 2 - affichage sans expander
                 member2_name = team["member2"]["name"] if team["member2"]["name"] else "Membre 2"
@@ -436,24 +636,24 @@ with tab1:
                 # Vérifier si la clé existe dans les évaluations
                 if member2_name not in evaluations[team["teamName"]]["individual"]:
                     evaluations[team["teamName"]]["individual"][member2_name] = {
-                        "webProgramming": 0,
-                        "algorithmic": 0,
-                        "totalScore": 0
+                        "webProgramming": 0.0,
+                        "algorithmic": 0.0,
+                        "totalScore": 0.0
                     }
                 
                 web_member2_key = f"web_{team['teamName']}_{member2_name}_{i}"
                 evaluations[team["teamName"]]["individual"][member2_name]["webProgramming"] = st.number_input(
                     "Exercice de programmation web (PDF)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][member2_name]["webProgramming"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][member2_name]["webProgramming"]),
                     key=web_member2_key
                 )
                 
                 algo_member2_key = f"algo_{team['teamName']}_{member2_name}_{i}"
                 evaluations[team["teamName"]]["individual"][member2_name]["algorithmic"] = st.number_input(
                     "Exercice d'algorithmique (Kattis)",
-                    min_value=0, max_value=20, step=1,
-                    value=evaluations[team["teamName"]]["individual"][member2_name]["algorithmic"],
+                    min_value=0.0, max_value=20.0, step=1.0,
+                    value=float(evaluations[team["teamName"]]["individual"][member2_name]["algorithmic"]),
                     key=algo_member2_key
                 )
                 
@@ -479,17 +679,17 @@ with tab2:
         
         # Vérifier si les clés existent
         if leader_name not in evaluations[team_name]["individual"]:
-            evaluations[team_name]["individual"][leader_name] = {"totalScore": 0}
+            evaluations[team_name]["individual"][leader_name] = {"totalScore": 0.0}
         if member1_name not in evaluations[team_name]["individual"]:
-            evaluations[team_name]["individual"][member1_name] = {"totalScore": 0}
+            evaluations[team_name]["individual"][member1_name] = {"totalScore": 0.0}
         if member2_name not in evaluations[team_name]["individual"]:
-            evaluations[team_name]["individual"][member2_name] = {"totalScore": 0}
+            evaluations[team_name]["individual"][member2_name] = {"totalScore": 0.0}
             
         # Calculer la moyenne des scores individuels
         individual_scores = [
-            evaluations[team_name]["individual"][leader_name]["totalScore"],
-            evaluations[team_name]["individual"][member1_name]["totalScore"],
-            evaluations[team_name]["individual"][member2_name]["totalScore"]
+            float(evaluations[team_name]["individual"][leader_name]["totalScore"]),
+            float(evaluations[team_name]["individual"][member1_name]["totalScore"]),
+            float(evaluations[team_name]["individual"][member2_name]["totalScore"])
         ]
         individual_avg = sum(individual_scores) / len(individual_scores)
         
@@ -632,6 +832,33 @@ with tab2:
         file_name="classement_hackathon.csv",
         mime="text/csv"
     )
+
+    # Gestion des évaluations (Sauvegarde/Chargement)
+    st.markdown("<div class='subtitle'>Gestion des données d'évaluation</div>", unsafe_allow_html=True)
+
+    save_col1, save_col2 = st.columns(2)
+
+    with save_col1:
+        if st.button("💾 Sauvegarder toutes les évaluations", key="save_button"):
+            try:
+                filename, backup_filename = save_evaluations_to_csv(st.session_state.evaluations)
+                st.success(f"Évaluations sauvegardées dans {filename} et {backup_filename} !")
+            except Exception as e:
+                st.error(f"Erreur lors de la sauvegarde: {e}")
+
+    with save_col2:
+        if st.button("📂 Charger les évaluations sauvegardées", key="load_button"):
+            try:
+                # Ne pas utiliser silent ici car l'utilisateur a explicitement demandé le chargement
+                loaded_evaluations = load_evaluations_from_csv(silent=False)
+                if loaded_evaluations:
+                    st.session_state.evaluations = loaded_evaluations
+                    st.success("Évaluations chargées avec succès !")
+                    st.rerun()  # Recharger la page pour mettre à jour les widgets
+            except Exception as e:
+                st.error(f"Erreur lors du chargement: {e}")
+
+    st.info("Les évaluations sont sauvegardées dans un fichier CSV qui peut être ouvert avec Excel ou tout autre tableur. Une copie de sauvegarde datée est également créée à chaque sauvegarde.")
 
     # Messages d'information
     st.info("Les 10 équipes avec le meilleur score final seront qualifiées pour le hackathon HACKVERSE 2025.")
